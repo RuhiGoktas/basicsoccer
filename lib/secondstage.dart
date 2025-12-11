@@ -23,6 +23,9 @@ class _SecondStagePageState extends State<SecondStagePage>
 
   late AnimationController _keeperController;
   double _keeperT = 0.5;
+  int _remainingShots = 3;
+  bool _hasScored = false;
+
 
   late AnimationController _playerRunController;
   Animation<Offset>? _playerRunAnimation;
@@ -369,7 +372,7 @@ if (hitWall) {
     _bounceStep = 0;
     _bouncePoints = [c0, c1, c2, c3];
   });
-
+  _registerAttempt(scored: false);
   _startBounceFromPoints();
   return;
 }
@@ -390,6 +393,7 @@ if (hitWall) {
 
       _keeperController.stop();
       _ballPhase = BallPhase.idle;
+	  _registerAttempt(scored: false);
 
       Future.delayed(const Duration(seconds: 5), () {
         if (!mounted) return;
@@ -410,6 +414,7 @@ if (hitWall) {
     if (hitGoal) {
       setState(() => _statusText = 'GOAL!');
       _ballPhase = BallPhase.idle;
+	  _registerAttempt(scored: true);
       _resetAfter();
       return;
     }
@@ -417,9 +422,31 @@ if (hitWall) {
     // 4) miss
     setState(() => _statusText = 'MISS!');
     _ballPhase = BallPhase.idle;
+	_registerAttempt(scored: false);
     _resetAfter();
   }
-void _startBounceFromPoints() {
+
+  void _registerAttempt({required bool scored}) {
+  setState(() {
+    if (scored) {
+      _hasScored = true;
+    }
+
+    if (_remainingShots > 0) {
+      _remainingShots--;
+    }
+  });
+
+  // If all chances used AND never scored › go back to first scene
+  if (_remainingShots == 0 && !_hasScored) {
+    Future.delayed(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      Navigator.of(context).pop(); // back to penalty scene (first page)
+    });
+  }
+}
+
+  void _startBounceFromPoints() {
   if (_bouncePoints == null || _bouncePoints!.length < 2) {
     _resetAfter();
     return;
@@ -485,50 +512,64 @@ Offset _bezier2(Offset p0, Offset p1, Offset p2, double t) {
             onPanStart: (d) => _onPanStart(d, size),
             onPanUpdate: (d) => _onPanUpdate(d, size),
             onPanEnd: (d) => _onPanEnd(d, size),
-            child: Stack(
-              children: [
-                CustomPaint(
-                  size: size,
-                  painter: FreeKickFieldPainter(
-                    ballPos: _ballPos,
-                    keeperT: _keeperT,
-                    kickT: _kickT,
-                    playerPos: _playerPos,
-                    keeperHasBall: _keeperHasBall,
-                  ),
-                ),
-                Positioned(
-                  top: 24,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Text(
-                      _statusText,
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: _statusText == 'GOAL!'
-                            ? Colors.yellow
-                            : Colors.white,
-                        shadows: const [
-                          Shadow(
-                            blurRadius: 8,
-                            color: Colors.black,
-                            offset: Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
+			child: Stack(
+			  children: [
+				CustomPaint(
+				  size: size,
+				  painter: FreeKickFieldPainter(
+					ballPos: _ballPos,
+					keeperT: _keeperT,
+					kickT: _kickT,
+					playerPos: _playerPos,
+					keeperHasBall: _keeperHasBall,
+				  ),
+				),
+				// status text
+				Positioned(
+				  top: 24,
+				  left: 0,
+				  right: 0,
+				  child: Center(
+					child: Text(
+					  _statusText,
+					  style: TextStyle(
+						fontSize: 28,
+						fontWeight: FontWeight.bold,
+						color:
+							_statusText == 'GOAL!' ? Colors.yellow : Colors.white,
+						shadows: const [
+						  Shadow(
+							blurRadius: 8,
+							color: Colors.black,
+							offset: Offset(0, 2),
+						  ),
+						],
+					  ),
+					),
+				  ),
+				),
+				// ?? electroboard with remaining shots
+				Positioned(
+				  top: 20,
+				  right: 16,
+				  child: SizedBox(
+					width: 70,
+					height: 40,
+					child: CustomPaint(
+					  painter: LedBoardPainter(value: _remainingShots),
+					),
+				  ),
+				),
+			  ],
+			),
+
           ),
         );
       },
     );
   }
 }
+
 
 class FreeKickFieldPainter extends CustomPainter {
   final Offset ballPos;      // 0..1
@@ -916,20 +957,39 @@ class FreeKickFieldPainter extends CustomPainter {
     );
     canvas.drawRect(shortsRect, paint);
 
-    // legs
-    paint
-      ..color = const Color(0xFFF7F7F7)
-      ..strokeWidth = 4;
-    final legTop = shortsRect.bottom;
-    final legLen = height * 0.36;
-    final leftHip = Offset(cx - torsoW * 0.18, legTop);
-    final rightHip = Offset(cx + torsoW * 0.18, legTop);
-    final leftFoot =
-        Offset(leftHip.dx - torsoW * 0.08, legTop + legLen);
-    final rightFoot =
-        Offset(rightHip.dx + torsoW * 0.08, legTop + legLen);
-    canvas.drawLine(leftHip, leftFoot, paint);
-    canvas.drawLine(rightHip, rightFoot, paint);
+  // --- LEGS (thicker) ---
+  final legPaint = Paint()..color = Colors.redAccent.shade100;
+  final hipY = shortsRect.bottom;
+  final legLen = height * 0.42;
+  final legW = torsoW * 0.18;
+
+  final leftHip = Offset(cx - torsoW * 0.20, hipY);
+  final rightHip = Offset(cx + torsoW * 0.20, hipY);
+  final leftFoot = Offset(leftHip.dx, hipY + legLen);
+  final rightFoot = Offset(rightHip.dx, hipY + legLen);
+
+  final leftLegRect = Rect.fromLTRB(
+    leftHip.dx - legW / 2,
+    leftHip.dy,
+    leftHip.dx + legW / 2,
+    leftFoot.dy,
+  );
+  final rightLegRect = Rect.fromLTRB(
+    rightHip.dx - legW / 2,
+    rightHip.dy,
+    rightHip.dx + legW / 2,
+    rightFoot.dy,
+  );
+
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(leftLegRect, const Radius.circular(4)),
+    legPaint,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rightLegRect, const Radius.circular(4)),
+    legPaint,
+  );
+
 
     // boots
     final bootsPaint = Paint()
@@ -951,227 +1011,416 @@ class FreeKickFieldPainter extends CustomPainter {
   // WALL PLAYER
   // ---------------------------------------------------------------------------
 
-  void _drawWallPlayer(Canvas canvas, Size size) {
-    final w = size.width;
-    final h = size.height;
-    final paint = Paint();
+void _drawWallPlayer(Canvas canvas, Size size) {
+  final w = size.width;
+  final h = size.height;
+  final paint = Paint();
 
-    // Match physics: center at (0.5, 0.63)
-    final cx = w * 0.5;
-    final cy = h * 0.63;
+  // Match physics: center at (0.5, 0.63)
+  final cx = w * 0.5;
+  final cy = h * 0.63;
 
-    final height = h * 0.23;
-    final headR = height * 0.11;
+  final height = h * 0.23;
+  final headR = height * 0.11;
 
-    // head
-    paint
-      ..color = const Color(0xFFF4D0A1)
-      ..style = PaintingStyle.fill;
-    final headCenter = Offset(cx, cy - height * 0.7);
-    canvas.drawCircle(headCenter, headR, paint);
+  // --- HEAD ---
+  paint
+    ..color = const Color(0xFFF4D0A1)
+    ..style = PaintingStyle.fill;
+  final headCenter = Offset(cx, cy - height * 0.7);
+  canvas.drawCircle(headCenter, headR, paint);
 
-    // hair
-    paint.color = const Color(0xFF6B3C1E);
-    canvas.drawArc(
-      Rect.fromCircle(center: headCenter, radius: headR),
-      math.pi,
-      math.pi,
-      true,
-      paint,
-    );
+  // hair (Beckham-ish: darker top + band)
+  paint.color = const Color(0xFF3A2415);
+  canvas.drawArc(
+    Rect.fromCircle(center: headCenter, radius: headR),
+    math.pi,
+    math.pi,
+    true,
+    paint,
+  );
 
-    // jersey (red)
-    paint.color = const Color(0xFFC0392B);
-    final torsoW = height * 0.26;
-    final torsoH = height * 0.50;
-    final torsoRect = Rect.fromLTWH(
-      cx - torsoW / 2,
-      headCenter.dy + headR * 0.25,
-      torsoW,
-      torsoH,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(torsoRect, const Radius.circular(6)),
-      paint,
-    );
+  // hair band
+  paint
+    ..color = const Color(0xFFE6C85B)
+    ..style = PaintingStyle.fill;
+  canvas.drawRect(
+    Rect.fromLTWH(
+      headCenter.dx - headR,
+      headCenter.dy - headR * 0.15,
+      headR * 2,
+      headR * 0.18,
+    ),
+    paint,
+  );
 
-    // arms protecting balls
-    paint
-      ..color = const Color(0xFFC0392B)
-      ..strokeWidth = 3.8;
-    final shoulderY = torsoRect.top + torsoH * 0.25;
-    final handsY = torsoRect.bottom - torsoH * 0.08;
-    final leftShoulder = Offset(cx - torsoW * 0.7, shoulderY);
-    final rightShoulder = Offset(cx + torsoW * 0.7, shoulderY);
-    canvas.drawLine(leftShoulder, Offset(cx - 3, handsY), paint);
-    canvas.drawLine(rightShoulder, Offset(cx + 3, handsY), paint);
+  // facial details: eyes + brows + mouth
+  final facePaint = Paint()..color = Colors.black87;
+  final eyeOffsetX = headR * 0.45;
+  final eyeOffsetY = headR * 0.10;
 
-    // shorts (white)
-    paint.color = const Color(0xFFE5E5E5);
-    final shortsH = height * 0.22;
-    final shortsRect = Rect.fromLTWH(
-      cx - torsoW / 2,
-      torsoRect.bottom,
-      torsoW,
-      shortsH,
-    );
-    canvas.drawRect(shortsRect, paint);
+  // eyes
+  canvas.drawCircle(
+      Offset(headCenter.dx - eyeOffsetX, headCenter.dy - eyeOffsetY),
+      headR * 0.09,
+      facePaint);
+  canvas.drawCircle(
+      Offset(headCenter.dx + eyeOffsetX, headCenter.dy - eyeOffsetY),
+      headR * 0.09,
+      facePaint);
 
-    // two legs
-    paint
-      ..color = Colors.redAccent.shade100
-      ..strokeWidth = 4;
-    final hipY = shortsRect.bottom;
-    final legLen = height * 0.42;
-    final leftHip = Offset(cx - torsoW * 0.20, hipY);
-    final rightHip = Offset(cx + torsoW * 0.20, hipY);
-    final leftFoot =
-        Offset(leftHip.dx - torsoW * 0.05, hipY + legLen);
-    final rightFoot =
-        Offset(rightHip.dx + torsoW * 0.05, hipY + legLen);
-    canvas.drawLine(leftHip, leftFoot, paint);
-    canvas.drawLine(rightHip, rightFoot, paint);
+  // eyebrows
+  facePaint.strokeWidth = headR * 0.08;
+  canvas.drawLine(
+    Offset(headCenter.dx - eyeOffsetX * 1.1,
+        headCenter.dy - eyeOffsetY * 1.4),
+    Offset(headCenter.dx - eyeOffsetX * 0.3,
+        headCenter.dy - eyeOffsetY * 1.5),
+    facePaint,
+  );
+  canvas.drawLine(
+    Offset(headCenter.dx + eyeOffsetX * 0.3,
+        headCenter.dy - eyeOffsetY * 1.5),
+    Offset(headCenter.dx + eyeOffsetX * 1.1,
+        headCenter.dy - eyeOffsetY * 1.4),
+    facePaint,
+  );
 
-    // boots
-    final bootsPaint = Paint()
-      ..color = Colors.black
-      ..strokeWidth = 5;
-    canvas.drawLine(
-      leftFoot,
-      Offset(leftFoot.dx - torsoW * 0.06, leftFoot.dy),
-      bootsPaint,
-    );
-    canvas.drawLine(
-      rightFoot,
-      Offset(rightFoot.dx + torsoW * 0.06, rightFoot.dy),
-      bootsPaint,
-    );
-  }
+  // mouth (small line)
+  facePaint.strokeWidth = headR * 0.06;
+  canvas.drawLine(
+    Offset(headCenter.dx - headR * 0.30, headCenter.dy + headR * 0.35),
+    Offset(headCenter.dx + headR * 0.30, headCenter.dy + headR * 0.35),
+    facePaint,
+  );
+
+  // --- TORSO (red jersey) ---
+  paint.color = const Color(0xFFC0392B);
+  final torsoW = height * 0.26;
+  final torsoH = height * 0.50;
+  final torsoRect = Rect.fromLTWH(
+    cx - torsoW / 2,
+    headCenter.dy + headR * 0.25,
+    torsoW,
+    torsoH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(torsoRect, const Radius.circular(6)),
+    paint,
+  );
+
+  // --- ARMS (Kaká-style, from shoulder to top of shorts) ---
+  final armPaint = Paint()..color = const Color(0xFFF4D03F);
+  final armW = torsoW * 0.18;
+
+  // shoulders are just under the top of the jersey
+  final shoulderY = torsoRect.top + torsoH * 0.05;
+
+  // hands should end slightly above start of shorts
+  final handY = torsoRect.bottom - torsoH * 0.05;
+
+  final armH = handY - shoulderY;
+
+  // left arm rectangle, starting at shoulder
+  final leftArmRect = Rect.fromLTWH(
+    torsoRect.left - armW * 0.9,   // attached to left edge
+    shoulderY,
+    armW,
+    armH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(leftArmRect, const Radius.circular(4)),
+    armPaint,
+  );
+
+  // right arm rectangle, starting at shoulder
+  final rightArmRect = Rect.fromLTWH(
+    torsoRect.right,               // attached to right edge
+    shoulderY,
+    armW,
+    armH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rightArmRect, const Radius.circular(4)),
+    armPaint,
+  );
+
+  // small darker cuffs at the end of sleeves (adds a bit of realism)
+  final cuffPaint = Paint()..color = const Color(0xFFE0B400);
+  final cuffH = armH * 0.12;
+  canvas.drawRect(
+    Rect.fromLTWH(leftArmRect.left, handY - cuffH, armW, cuffH),
+    cuffPaint,
+  );
+  canvas.drawRect(
+    Rect.fromLTWH(rightArmRect.left, handY - cuffH, armW, cuffH),
+    cuffPaint,
+  );
+
+
+  // --- SHORTS (white) ---
+  paint.color = const Color(0xFFE5E5E5);
+  final shortsH = height * 0.22;
+  final shortsRect = Rect.fromLTWH(
+    cx - torsoW / 2,
+    torsoRect.bottom,
+    torsoW,
+    shortsH,
+  );
+  canvas.drawRect(shortsRect, paint);
+
+   // --- LEGS (thicker) ---
+  final legPaint = Paint()..color = Colors.red;
+  final hipY = shortsRect.bottom;
+  final legLen = height * 0.42;
+  final legW = torsoW * 0.24;
+
+  final leftHip = Offset(cx - torsoW * 0.29, hipY);
+  final rightHip = Offset(cx + torsoW * 0.29, hipY);
+  final leftFoot = Offset(leftHip.dx, hipY + legLen);
+  final rightFoot = Offset(rightHip.dx, hipY + legLen);
+
+  final leftLegRect = Rect.fromLTRB(
+    leftHip.dx - legW / 2,
+    leftHip.dy,
+    leftHip.dx + legW / 2,
+    leftFoot.dy,
+  );
+  final rightLegRect = Rect.fromLTRB(
+    rightHip.dx - legW / 2,
+    rightHip.dy,
+    rightHip.dx + legW / 2,
+    rightFoot.dy,
+  );
+
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(leftLegRect, const Radius.circular(4)),
+    legPaint,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rightLegRect, const Radius.circular(4)),
+    legPaint,
+  );
+
+
+  // --- BOOTS ---
+  final bootsPaint = Paint()
+    ..color = Colors.black
+    ..strokeWidth = 5;
+  canvas.drawLine(
+    leftFoot,
+    Offset(leftFoot.dx - torsoW * 0.06, leftFoot.dy),
+    bootsPaint,
+  );
+  canvas.drawLine(
+    rightFoot,
+    Offset(rightFoot.dx + torsoW * 0.06, rightFoot.dy),
+    bootsPaint,
+  );
+}
 
   // ---------------------------------------------------------------------------
   // KICKER (foreground)
   // ---------------------------------------------------------------------------
 
-  void _drawKicker(
-      Canvas canvas, Size size, Offset playerPosFrac, double kickT) {
-    final w = size.width;
-    final h = size.height;
-    final paint = Paint();
+void _drawKicker(
+    Canvas canvas, Size size, Offset playerPosFrac, double kickT) {
+  final w = size.width;
+  final h = size.height;
+  final paint = Paint();
 
-    final px = playerPosFrac.dx * w;
-    final py = playerPosFrac.dy * h;
+  final px = playerPosFrac.dx * w;
+  final py = playerPosFrac.dy * h;
 
-    final height = h * 0.34;
-    final headR = height * 0.11;
+  final height = h * 0.34;
+  final headR = height * 0.11;
 
-    // head
-    paint
-      ..color = const Color(0xFFF4D0A1)
-      ..style = PaintingStyle.fill;
-    final headCenter = Offset(px, py - height + headR * 1.2);
-    canvas.drawCircle(headCenter, headR, paint);
+  // --- HEAD ---
+  paint
+    ..color = const Color(0xFFF4D0A1)
+    ..style = PaintingStyle.fill;
+  final headCenter = Offset(px, py - height + headR * 1.2);
+  canvas.drawCircle(headCenter, headR, paint);
 
-    // hair
-    paint.color = const Color(0xFF2C1C11);
-    canvas.drawArc(
-      Rect.fromCircle(center: headCenter, radius: headR),
-      math.pi,
-      math.pi,
-      true,
-      paint,
-    );
+  // hair
+  paint.color = const Color(0xFF2C1C11);
+  canvas.drawArc(
+    Rect.fromCircle(center: headCenter, radius: headR),
+    math.pi,
+    math.pi,
+    true,
+    paint,
+  );
 
-    // jersey (Brazil-like yellow)
-    paint.color = const Color(0xFFF4D03F);
-    final torsoW = height * 0.34;
-    final torsoH = height * 0.46;
-    final torsoRect = Rect.fromLTWH(
-      px - torsoW / 2,
-      headCenter.dy + headR * 0.18,
-      torsoW,
-      torsoH,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(torsoRect, const Radius.circular(8)),
-      paint,
-    );
+  // --- BODY (jersey) ---
+  paint.color = const Color(0xFFF4D03F); // yellow jersey
+  final torsoW = height * 0.34;
+  final torsoH = height * 0.46;
+  final torsoRect = Rect.fromLTWH(
+    px - torsoW / 2,
+    headCenter.dy + headR * 0.18,
+    torsoW,
+    torsoH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(torsoRect, const Radius.circular(8)),
+    paint,
+  );
 
-    // side shading
-    final sidePaint = Paint()
-      ..color = const Color(0xFFF7E47B)
-      ..strokeWidth = 3;
-    canvas.drawLine(
-      Offset(torsoRect.left + 2, torsoRect.top + 4),
-      Offset(torsoRect.left + 2, torsoRect.bottom - 4),
-      sidePaint,
-    );
+  // side shading
+  final sidePaint = Paint()
+    ..color = const Color(0xFFF7E47B)
+    ..strokeWidth = 3;
+  canvas.drawLine(
+    Offset(torsoRect.left + 2, torsoRect.top + 4),
+    Offset(torsoRect.left + 2, torsoRect.bottom - 4),
+    sidePaint,
+  );
 
-    // arms
-    paint
-      ..color = const Color(0xFFF4D03F)
-      ..strokeWidth = 4;
-    final shoulderY = torsoRect.top + torsoH * 0.25;
-    canvas.drawLine(
-      Offset(px - torsoW * 0.75, shoulderY),
-      Offset(px - torsoW * 0.75, shoulderY + torsoH * 0.5),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(px + torsoW * 0.75, shoulderY),
-      Offset(px + torsoW * 0.75, shoulderY + torsoH * 0.5),
-      paint,
-    );
+  // --- ARMS (Kaká-style, from shoulder to top of shorts) ---
+  final armPaint = Paint()..color = const Color(0xFFF4D03F);
+  final armW = torsoW * 0.18;
 
-    // shorts (blue)
-    paint.color = const Color(0xFF1F4E8C);
-    final shortsH = height * 0.21;
-    final shortsRect = Rect.fromLTWH(
-      px - torsoW / 2,
-      torsoRect.bottom,
-      torsoW,
-      shortsH,
-    );
-    canvas.drawRect(shortsRect, paint);
+  // shoulders are just under the top of the jersey
+  final shoulderY = torsoRect.top + torsoH * 0.05;
 
-    // legs
-    paint
-      ..color = const Color(0xFFF7F7F7)
-      ..strokeWidth = 4;
-    final hipY = shortsRect.bottom;
-    final legLen = height * 0.42;
+  // hands should end slightly above start of shorts
+  final handY = torsoRect.bottom - torsoH * 0.05;
 
-    // support leg
-    final leftHip = Offset(px - torsoW * 0.24, hipY);
-    final leftFoot =
-        Offset(leftHip.dx - torsoW * 0.06, hipY + legLen);
-    canvas.drawLine(leftHip, leftFoot, paint);
+  final armH = handY - shoulderY;
 
-    // kicking leg (animated)
-    final rightHip = Offset(px + torsoW * 0.24, hipY);
-    const startAngle = 1.6;
-    const endAngle = 0.8;
-    final eased = Curves.easeOut.transform(kickT.clamp(0.0, 1.0));
-    final angle = startAngle + (endAngle - startAngle) * eased;
-    final dx = legLen * math.cos(angle);
-    final dy = legLen * math.sin(angle);
-    final rightFoot = Offset(rightHip.dx + dx, rightHip.dy + dy);
-    canvas.drawLine(rightHip, rightFoot, paint);
+  // left arm rectangle, starting at shoulder
+  final leftArmRect = Rect.fromLTWH(
+    torsoRect.left - armW * 0.9,   // attached to left edge
+    shoulderY,
+    armW,
+    armH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(leftArmRect, const Radius.circular(4)),
+    armPaint,
+  );
 
-    // boots
-    final bootsPaint = Paint()
-      ..color = Colors.black
-      ..strokeWidth = 6;
-    canvas.drawLine(
-      leftFoot,
-      Offset(leftFoot.dx - torsoW * 0.08, leftFoot.dy),
-      bootsPaint,
-    );
-    canvas.drawLine(
-      rightFoot,
-      Offset(rightFoot.dx + torsoW * 0.10, rightFoot.dy),
-      bootsPaint,
-    );
-  }
+  // right arm rectangle, starting at shoulder
+  final rightArmRect = Rect.fromLTWH(
+    torsoRect.right,               // attached to right edge
+    shoulderY,
+    armW,
+    armH,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(rightArmRect, const Radius.circular(4)),
+    armPaint,
+  );
+
+  // small darker cuffs at the end of sleeves (adds a bit of realism)
+  // small darker cuffs at the end of sleeves (adds a bit of realism)
+  final cuffPaint = Paint()..color = const Color(0xFFE0B400);
+  final cuffH = armH * 0.12;
+
+  // cuffs
+  final leftCuffRect =
+      Rect.fromLTWH(leftArmRect.left, handY - cuffH, armW, cuffH);
+  final rightCuffRect =
+      Rect.fromLTWH(rightArmRect.left, handY - cuffH, armW, cuffH);
+
+  canvas.drawRect(leftCuffRect, cuffPaint);
+  canvas.drawRect(rightCuffRect, cuffPaint);
+
+  // --- HANDS (skin, slightly below cuffs) ---
+  final handPaint = Paint()..color = const Color(0xFFF4D0A1);
+  final handR = armW * 0.35;
+
+  final leftHandCenter = Offset(
+    leftArmRect.left + armW / 2,
+    handY + handR * 0.6,
+  );
+  final rightHandCenter = Offset(
+    rightArmRect.left + armW / 2,
+    handY + handR * 0.6,
+  );
+
+  canvas.drawCircle(leftHandCenter, handR, handPaint);
+  canvas.drawCircle(rightHandCenter, handR, handPaint);
+
+
+
+  // --- SHORTS ---
+  paint.color = const Color(0xFF1F4E8C);
+  final shortsH = height * 0.21;
+  final shortsRect = Rect.fromLTWH(
+    px - torsoW / 2,
+    torsoRect.bottom,
+    torsoW,
+    shortsH,
+  );
+  canvas.drawRect(shortsRect, paint);
+
+  // --- LEGS (thick socks instead of toothpicks) ---
+  final sockPaint = Paint()..color = const Color(0xFFF7F7F7);
+  final hipY = shortsRect.bottom;
+  final legLen = height * 0.42;
+  final legW = torsoW * 0.18;
+
+  // support leg
+  final leftHip = Offset(px - torsoW * 0.22, hipY);
+  final leftFoot = Offset(leftHip.dx, hipY + legLen);
+  final leftLegRect = Rect.fromLTRB(
+    leftHip.dx - legW / 2,
+    leftHip.dy,
+    leftHip.dx + legW / 2,
+    leftFoot.dy,
+  );
+  canvas.drawRRect(
+    RRect.fromRectAndRadius(leftLegRect, const Radius.circular(4)),
+    sockPaint,
+  );
+
+  // kicking leg (animated)
+  final rightHip = Offset(px + torsoW * 0.22, hipY);
+  const startAngle = 1.6;
+  const endAngle = 0.8;
+  final eased = Curves.easeOut.transform(kickT.clamp(0.0, 1.0));
+  final angle = startAngle + (endAngle - startAngle) * eased;
+  final dx = legLen * math.cos(angle);
+  final dy = legLen * math.sin(angle);
+  final rightFoot = Offset(rightHip.dx + dx, rightHip.dy + dy);
+
+  // approximate animated leg as a slanted rounded-rect between hip and foot
+  final legVec = rightFoot - rightHip;
+  final legDir = legVec / legVec.distance;
+  final perp = Offset(-legDir.dy, legDir.dx); // 90° rotated
+  final halfW = legW / 2;
+
+  final p1 = rightHip + perp * halfW;
+  final p2 = rightHip - perp * halfW;
+  final p3 = rightFoot - perp * halfW;
+  final p4 = rightFoot + perp * halfW;
+
+  final path = Path()
+    ..moveTo(p1.dx, p1.dy)
+    ..lineTo(p2.dx, p2.dy)
+    ..lineTo(p3.dx, p3.dy)
+    ..lineTo(p4.dx, p4.dy)
+    ..close();
+  canvas.drawPath(path, sockPaint);
+
+
+  // --- BOOTS ---
+  final bootsPaint = Paint()
+    ..color = Colors.black
+    ..strokeWidth = 6;
+  canvas.drawLine(
+    leftFoot,
+    Offset(leftFoot.dx - torsoW * 0.08, leftFoot.dy),
+    bootsPaint,
+  );
+  canvas.drawLine(
+    rightFoot,
+    Offset(rightFoot.dx + torsoW * 0.10, rightFoot.dy),
+    bootsPaint,
+  );
+}
 
   // ---------------------------------------------------------------------------
   // BALL
@@ -1245,5 +1494,91 @@ class FreeKickFieldPainter extends CustomPainter {
         old.kickT != kickT ||
         old.playerPos != playerPos ||
         old.keeperHasBall != keeperHasBall;
+  }
+}
+
+class LedBoardPainter extends CustomPainter {
+  final int value; // 0–9
+
+  LedBoardPainter({required this.value});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bgPaint = Paint()
+      ..color = const Color(0xFF050608)
+      ..style = PaintingStyle.fill;
+
+    final borderPaint = Paint()
+      ..color = const Color(0xFF333843)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    final rect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(8),
+    );
+    canvas.drawRRect(rect, bgPaint);
+    canvas.drawRRect(rect, borderPaint);
+
+    // 7-segment style coordinates
+    final segOnPaint = Paint()
+      ..color = const Color(0xFFFF0030)
+      ..style = PaintingStyle.fill;
+
+    final segOffPaint = Paint()
+      ..color = const Color(0xFF550010)
+      ..style = PaintingStyle.fill;
+
+    final w = size.width;
+    final h = size.height;
+    final thickness = h * 0.16;
+    final gap = thickness * 0.3;
+
+    final top    = Rect.fromLTWH(gap, gap, w - 2 * gap, thickness);
+    final middle = Rect.fromLTWH(gap, h / 2 - thickness / 2, w - 2 * gap, thickness);
+    final bottom = Rect.fromLTWH(gap, h - thickness - gap, w - 2 * gap, thickness);
+
+    final leftTop  = Rect.fromLTWH(gap, gap, thickness, h / 2 - gap);
+    final leftBot  = Rect.fromLTWH(gap, h / 2, thickness, h / 2 - gap);
+    final rightTop = Rect.fromLTWH(w - thickness - gap, gap, thickness, h / 2 - gap);
+    final rightBot = Rect.fromLTWH(w - thickness - gap, h / 2, thickness, h / 2 - gap);
+
+    // segments: 0=top, 1=top-right, 2=bottom-right, 3=bottom, 4=bottom-left, 5=top-left, 6=middle
+    const digitToSegments = <int, List<int>>{
+      0: [0, 1, 2, 3, 4, 5],
+      1: [1, 2],
+      2: [0, 1, 6, 4, 3],
+      3: [0, 1, 6, 2, 3],
+      4: [5, 6, 1, 2],
+      5: [0, 5, 6, 2, 3],
+      6: [0, 5, 6, 2, 3, 4],
+      7: [0, 1, 2],
+      8: [0, 1, 2, 3, 4, 5, 6],
+      9: [0, 1, 2, 3, 5, 6],
+    };
+
+    final v = value.clamp(0, 9);
+    final active = digitToSegments[v] ?? [];
+
+    void drawSeg(int index, Rect r) {
+      final isOn = active.contains(index);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(r, const Radius.circular(3)),
+        isOn ? segOnPaint : segOffPaint,
+      );
+    }
+
+    drawSeg(0, top);
+    drawSeg(1, rightTop);
+    drawSeg(2, rightBot);
+    drawSeg(3, bottom);
+    drawSeg(4, leftBot);
+    drawSeg(5, leftTop);
+    drawSeg(6, middle);
+  }
+
+  @override
+  bool shouldRepaint(covariant LedBoardPainter oldDelegate) {
+    return oldDelegate.value != value;
   }
 }
