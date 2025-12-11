@@ -16,6 +16,10 @@ class _SecondStagePageState extends State<SecondStagePage>
   late AnimationController _ballController;
   Animation<Offset>? _ballAnimation;
   BallPhase _ballPhase = BallPhase.idle;
+  
+  int _bounceStep = 0;               // 0 › 1st bounce, 1 › 2nd, 2 › 3rd
+  List<Offset>? _bouncePoints;       // [collision, b1, b2, b3]
+
 
   late AnimationController _keeperController;
   double _keeperT = 0.5;
@@ -60,16 +64,22 @@ class _SecondStagePageState extends State<SecondStagePage>
       }
     });
 
-    _ballController.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        if (_ballPhase == BallPhase.shot) {
-          _evaluateShotResult();
-        } else if (_ballPhase == BallPhase.bounce) {
-          _ballPhase = BallPhase.idle;
-          _resetAfter();
-        }
+_ballController.addStatusListener((status) {
+  if (status == AnimationStatus.completed) {
+    if (_ballPhase == BallPhase.shot) {
+      _evaluateShotResult();
+    } else if (_ballPhase == BallPhase.bounce) {
+      _bounceStep++;
+      if (_bouncePoints != null && _bounceStep < 3) {
+        _startBounceFromPoints();
+      } else {
+        _resetAfter();
       }
-    });
+    }
+  }
+});
+
+
 
     _keeperController = AnimationController(
       vsync: this,
@@ -143,55 +153,99 @@ class _SecondStagePageState extends State<SecondStagePage>
     _dragLast = d.localPosition;
   }
 
-  void _onPanEnd(DragEndDetails d, Size size) {
-    if (_isAnimating) return;
-    if (_dragStart == null || _dragLast == null) return;
+void _onPanEnd(DragEndDetails d, Size size) {
+  if (_isAnimating) return;
+  if (_dragStart == null || _dragLast == null) return;
 
-    final direction = _dragLast! - _dragStart!;
-    if (direction.distance < 20) {
-      _dragStart = null;
-      _dragLast = null;
-      return;
-    }
-
-    final ballPx = Offset(
-      _ballPos.dx * size.width,
-      _ballPos.dy * size.height,
-    );
-    final dirNorm = direction / direction.distance;
-    final power = direction.distance.clamp(150.0, 600.0);
-    final targetPx = ballPx + dirNorm * power * 1.4;
-
-    final targetFrac = Offset(
-      (targetPx.dx / size.width).clamp(0.0, 1.0),
-      (targetPx.dy / size.height).clamp(0.0, 1.0),
-    );
-
-    _pendingBallTargetFrac = targetFrac;
-    _lastShotStart = _ballPos;
-    _lastShotEnd = targetFrac;
-
-    final runTarget = Offset(
-      (_ballPos.dx - 0.03).clamp(0.0, 1.0),
-      (_ballPos.dy + 0.02).clamp(0.0, 1.0),
-    );
-
-    _playerRunAnimation = Tween<Offset>(
-      begin: _playerPos,
-      end: runTarget,
-    ).animate(
-      CurvedAnimation(
-        parent: _playerRunController,
-        curve: Curves.easeOut,
-      ),
-    );
-
-    _isAnimating = true;
-    _playerRunController.forward(from: 0);
-
+  final direction = _dragLast! - _dragStart!;
+  if (direction.distance < 20) {
     _dragStart = null;
     _dragLast = null;
+    return;
   }
+
+  // 1) Raw target based on swipe
+  final ballPx = Offset(
+    _ballPos.dx * size.width,
+    _ballPos.dy * size.height,
+  );
+  final dirNorm = direction / direction.distance;
+  final power = direction.distance.clamp(150.0, 600.0);
+  final targetPx = ballPx + dirNorm * power * 1.4;
+
+  Offset targetFrac = Offset(
+    (targetPx.dx / size.width).clamp(0.0, 1.0),
+    (targetPx.dy / size.height).clamp(0.0, 1.0),
+  );
+
+  // 2) Predict if we will hit the wall BEFORE animating
+  final p0 = _ballPos;
+  final p1 = targetFrac;
+
+  const ballR = 0.018;
+  const wallX = 0.5;
+  const wallY = 0.63;
+  const wallW = 0.045;
+  const wallH = 0.18;
+
+  // Wall body in fraction coordinates (no extra padding, just a tiny + ball radius)
+  final wallTop = wallY - wallH / 2;
+  final wallBottom = wallY + wallH / 2;
+
+  bool willHitWall = false;
+  Offset? collision;
+
+  // Only meaningful if we are shooting roughly from left to right
+  if (p1.dx > p0.dx) {
+    // Front face x-position where ball's edge touches wall body
+    final wallFrontX = wallX - wallW / 2 - ballR;
+
+    if (wallFrontX > p0.dx && wallFrontX < p1.dx) {
+      // param t where x(t) = wallFrontX
+      final t = (wallFrontX - p0.dx) / (p1.dx - p0.dx);
+      final yAt = p0.dy + (p1.dy - p0.dy) * t;
+
+      if (yAt >= wallTop - ballR && yAt <= wallBottom + ballR) {
+        willHitWall = true;
+        collision = Offset(wallFrontX, yAt);
+      }
+    }
+  }
+
+  // If shot will hit the wall, truncate path at collision
+  if (willHitWall && collision != null) {
+    targetFrac = collision;
+  }
+
+  // 3) Store shot path (possibly truncated)
+  _pendingBallTargetFrac = targetFrac;
+  _lastShotStart = p0;
+  _lastShotEnd = targetFrac;
+
+  // 4) Player run-up
+  final runTarget = Offset(
+    (_ballPos.dx - 0.03).clamp(0.0, 1.0),
+    (_ballPos.dy + 0.02).clamp(0.0, 1.0),
+  );
+
+  _playerRunAnimation = Tween<Offset>(
+    begin: _playerPos,
+    end: runTarget,
+  ).animate(
+    CurvedAnimation(
+      parent: _playerRunController,
+      curve: Curves.easeOut,
+    ),
+  );
+
+  _isAnimating = true;
+  _playerRunController.forward(from: 0);
+
+  _dragStart = null;
+  _dragLast = null;
+}
+
+
 
   void _startKickAndBall() {
     if (_pendingBallTargetFrac == null) {
@@ -220,6 +274,7 @@ class _SecondStagePageState extends State<SecondStagePage>
       _resetAfter();
       return;
     }
+	
 
     final p0 = _lastShotStart!;
     final p1 = _lastShotEnd!;
@@ -292,41 +347,31 @@ class _SecondStagePageState extends State<SecondStagePage>
     }
 
     // 1) wall bounce
-    if (hitWall) {
-      final collision = Offset(
-        p0.dx + (p1.dx - p0.dx) * wallHitT,
-        p0.dy + (p1.dy - p0.dy) * wallHitT,
-      );
-      final dir = p1 - p0;
-      final len = dir.distance == 0 ? 1 : dir.distance;
-      final dirNorm = dir / len.toDouble(); // <-- fixed cast
-      final reflected = Offset(-dirNorm.dx, dirNorm.dy);
-      final bounceLen = (len * 0.3).clamp(0.06, 0.5);
-      var bounceTarget = collision + reflected * bounceLen;
-      bounceTarget = Offset(
-        bounceTarget.dx.clamp(0.0, 1.0),
-        bounceTarget.dy.clamp(0.0, 1.0),
-      );
+if (hitWall) {
+  // The shot was truncated to the wall front in _onPanEnd,
+  // so the end point is effectively the collision point.
+  final collision = _lastShotEnd ?? p1;
 
-      setState(() {
-        _statusText = 'BLOCKED!';
-        _ballPos = collision;
-      });
+  // Slight vertical bounces in place (no horizontal drift)
+  final c0 = collision;
+  final c1 = Offset(collision.dx, (collision.dy - 0.05).clamp(0.0, 1.0));
+  final c2 = Offset(collision.dx, (collision.dy - 0.02).clamp(0.0, 1.0));
+  final c3 = collision;
 
-      _ballAnimation = Tween<Offset>(
-        begin: collision,
-        end: bounceTarget,
-      ).animate(
-        CurvedAnimation(
-          parent: _ballController,
-          curve: Curves.easeOut,
-        ),
-      );
+  setState(() {
+    _statusText = 'BLOCKED!';
+    _ballPos = c0;
+    _ballPhase = BallPhase.bounce;
+    _bounceStep = 0;
+    _bouncePoints = [c0, c1, c2, c3];
+  });
 
-      _ballPhase = BallPhase.bounce;
-      _ballController.forward(from: 0);
-      return;
-    }
+  _startBounceFromPoints();
+  return;
+}
+
+
+
 
     // 2) keeper save
     if (hitKeeper) {
@@ -370,6 +415,35 @@ class _SecondStagePageState extends State<SecondStagePage>
     _ballPhase = BallPhase.idle;
     _resetAfter();
   }
+void _startBounceFromPoints() {
+  if (_bouncePoints == null || _bouncePoints!.length < 2) {
+    _resetAfter();
+    return;
+  }
+
+  final int nextIndex = _bounceStep + 1;
+  if (nextIndex >= _bouncePoints!.length) {
+    _resetAfter();
+    return;
+  }
+
+  final begin = _bouncePoints![_bounceStep];
+  final end = _bouncePoints![nextIndex];
+
+  _ballAnimation = Tween<Offset>(
+    begin: begin,
+    end: end,
+  ).animate(
+    CurvedAnimation(
+      parent: _ballController,
+      curve: Curves.easeOut,
+    ),
+  );
+
+  _ballController.forward(from: 0);
+}
+
+
 
   void _resetAfter() {
     Future.delayed(const Duration(milliseconds: 900), () {
