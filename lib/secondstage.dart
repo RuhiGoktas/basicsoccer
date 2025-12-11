@@ -39,6 +39,14 @@ class _SecondStagePageState extends State<SecondStagePage>
   Offset? _pendingBallTargetFrac;
   Offset? _lastShotStart;
   Offset? _lastShotEnd;
+  
+  // for curved free kick
+	List<Offset> _swipePoints = [];
+
+	Offset? _curveStart;  // p0
+	Offset? _curveMid;    // p1
+	Offset? _curveEnd;    // p2
+
 
   Offset? _dragStart;
   Offset? _dragLast;
@@ -56,25 +64,33 @@ class _SecondStagePageState extends State<SecondStagePage>
       duration: const Duration(milliseconds: 650),
     );
 
-    _ballController.addListener(() {
-      if (_ballAnimation != null) {
-        setState(() {
-          _ballPos = _ballAnimation!.value;
-        });
-      }
-    });
 
+_ballController.addListener(() {
+  setState(() {
+    if (_ballPhase == BallPhase.shot &&
+        _curveStart != null &&
+        _curveMid != null &&
+        _curveEnd != null) {
+      final t = _ballController.value.clamp(0.0, 1.0);
+      _ballPos = _bezier2(_curveStart!, _curveMid!, _curveEnd!, t);
+    } else {
+      _ballPos = _ballAnimation?.value ?? _ballPos;
+    }
+  });
+});
 _ballController.addStatusListener((status) {
   if (status == AnimationStatus.completed) {
-    if (_ballPhase == BallPhase.shot) {
-      _evaluateShotResult();
-    } else if (_ballPhase == BallPhase.bounce) {
+    if (_ballPhase == BallPhase.bounce) {
+      // handle bounce steps only
       _bounceStep++;
       if (_bouncePoints != null && _bounceStep < 3) {
         _startBounceFromPoints();
       } else {
         _resetAfter();
       }
+    } else {
+      // any non-bounce completion (shot / safety) › evaluate result
+      _evaluateShotResult();
     }
   }
 });
@@ -138,20 +154,25 @@ _ballController.addStatusListener((status) {
     super.dispose();
   }
 
-  void _onPanStart(DragStartDetails d, Size size) {
-    if (_isAnimating) return;
-    setState(() {
-      _statusText = '';
-    });
-    final local = d.localPosition;
-    _dragStart = local;
-    _dragLast = local;
-  }
+void _onPanStart(DragStartDetails d, Size size) {
+  if (_isAnimating) return;
 
-  void _onPanUpdate(DragUpdateDetails d) {
-    if (_isAnimating) return;
-    _dragLast = d.localPosition;
-  }
+  _dragStart = d.localPosition;
+  _dragLast = d.localPosition;
+
+  // start recording swipe path
+  _swipePoints = [d.localPosition];
+}
+
+
+void _onPanUpdate(DragUpdateDetails d, Size size) {
+  if (_isAnimating || _dragStart == null) return;
+
+  _dragLast = d.localPosition;
+
+  // keep adding points for curve
+  _swipePoints.add(d.localPosition);
+}
 
 void _onPanEnd(DragEndDetails d, Size size) {
   if (_isAnimating) return;
@@ -161,68 +182,43 @@ void _onPanEnd(DragEndDetails d, Size size) {
   if (direction.distance < 20) {
     _dragStart = null;
     _dragLast = null;
+    _swipePoints.clear();
     return;
   }
 
-  // 1) Raw target based on swipe
-  final ballPx = Offset(
-    _ballPos.dx * size.width,
-    _ballPos.dy * size.height,
-  );
-  final dirNorm = direction / direction.distance;
-  final power = direction.distance.clamp(150.0, 600.0);
-  final targetPx = ballPx + dirNorm * power * 1.4;
+  // --- build Bézier from swipe path ---
 
-  Offset targetFrac = Offset(
-    (targetPx.dx / size.width).clamp(0.0, 1.0),
-    (targetPx.dy / size.height).clamp(0.0, 1.0),
-  );
-
-  // 2) Predict if we will hit the wall BEFORE animating
-  final p0 = _ballPos;
-  final p1 = targetFrac;
-
-  const ballR = 0.018;
-  const wallX = 0.5;
-  const wallY = 0.63;
-  const wallW = 0.045;
-  const wallH = 0.18;
-
-  // Wall body in fraction coordinates (no extra padding, just a tiny + ball radius)
-  final wallTop = wallY - wallH / 2;
-  final wallBottom = wallY + wallH / 2;
-
-  bool willHitWall = false;
-  Offset? collision;
-
-  // Only meaningful if we are shooting roughly from left to right
-  if (p1.dx > p0.dx) {
-    // Front face x-position where ball's edge touches wall body
-    final wallFrontX = wallX - wallW / 2 - ballR;
-
-    if (wallFrontX > p0.dx && wallFrontX < p1.dx) {
-      // param t where x(t) = wallFrontX
-      final t = (wallFrontX - p0.dx) / (p1.dx - p0.dx);
-      final yAt = p0.dy + (p1.dy - p0.dy) * t;
-
-      if (yAt >= wallTop - ballR && yAt <= wallBottom + ballR) {
-        willHitWall = true;
-        collision = Offset(wallFrontX, yAt);
-      }
-    }
+  if (_swipePoints.length < 3) {
+    // fallback: fake a simple slight curve using drag start/mid/end
+    _swipePoints = [
+      _dragStart!,
+      (_dragStart! + _dragLast!) / 2,
+      _dragLast!,
+    ];
   }
 
-  // If shot will hit the wall, truncate path at collision
-  if (willHitWall && collision != null) {
-    targetFrac = collision;
-  }
+  final localStart = _swipePoints.first;
+  final localEnd = _swipePoints.last;
+  final localMid = _swipePoints[_swipePoints.length ~/ 2];
 
-  // 3) Store shot path (possibly truncated)
-  _pendingBallTargetFrac = targetFrac;
+  // convert to 0..1 fractions
+  final p0 = _ballPos; // REAL start is the ball itself
+  final p2 = Offset(localEnd.dx / size.width, localEnd.dy / size.height);
+  final p1 = Offset(localMid.dx / size.width, localMid.dy / size.height);
+
+  _curveStart = p0;
+  _curveMid = p1;
+  _curveEnd = p2;
+
   _lastShotStart = p0;
-  _lastShotEnd = targetFrac;
+  _lastShotEnd = p2;
 
-  // 4) Player run-up
+  // This is only used for timing (ball controller duration); end = curve end
+  Offset targetFrac = p2;
+
+  _pendingBallTargetFrac = targetFrac;
+
+  // --- player run-up (same as before) ---
   final runTarget = Offset(
     (_ballPos.dx - 0.03).clamp(0.0, 1.0),
     (_ballPos.dy + 0.02).clamp(0.0, 1.0),
@@ -243,7 +239,9 @@ void _onPanEnd(DragEndDetails d, Size size) {
 
   _dragStart = null;
   _dragLast = null;
+  _swipePoints.clear();
 }
+
 
 
 
@@ -275,9 +273,13 @@ void _onPanEnd(DragEndDetails d, Size size) {
       return;
     }
 	
-
-    final p0 = _lastShotStart!;
-    final p1 = _lastShotEnd!;
+  final p0 = _curveStart ?? _lastShotStart!;
+  final p2 = _curveEnd ?? _lastShotEnd!;
+  final p1 = _curveMid ??
+      Offset(
+        (p0.dx + p2.dx) / 2,
+        (p0.dy + p2.dy) / 2,
+      );
 
     // goal and keeper geometry
     const goalWidthFrac = 0.6;
@@ -326,9 +328,11 @@ void _onPanEnd(DragEndDetails d, Size size) {
     double wallHitT = 0.0;
 
     for (int i = 0; i <= steps; i++) {
-      final t = i / steps;
-      final x = p0.dx + (p1.dx - p0.dx) * t;
-      final y = p0.dy + (p1.dy - p0.dy) * t;
+        final t = i / steps;
+		final pos = _bezier2(p0, p1, p2, t);
+		final x = pos.dx;
+		final y = pos.dy;
+
 
       if (x >= wL && x <= wR && y >= wT && y <= wB) {
         hitWall = true;
@@ -443,6 +447,14 @@ void _startBounceFromPoints() {
   _ballController.forward(from: 0);
 }
 
+Offset _bezier2(Offset p0, Offset p1, Offset p2, double t) {
+  final u = 1.0 - t;
+  final x = u * u * p0.dx + 2 * u * t * p1.dx + t * t * p2.dx;
+  final y = u * u * p0.dy + 2 * u * t * p1.dy + t * t * p2.dy;
+  return Offset(x, y);
+}
+
+
 
 
   void _resetAfter() {
@@ -457,6 +469,9 @@ void _startBounceFromPoints() {
       });
       _isAnimating = false;
     });
+	_curveStart = _curveMid = _curveEnd = null;
+    _swipePoints.clear();
+
   }
 
   @override
@@ -468,7 +483,7 @@ void _startBounceFromPoints() {
         return Scaffold(
           body: GestureDetector(
             onPanStart: (d) => _onPanStart(d, size),
-            onPanUpdate: _onPanUpdate,
+            onPanUpdate: (d) => _onPanUpdate(d, size),
             onPanEnd: (d) => _onPanEnd(d, size),
             child: Stack(
               children: [
@@ -516,10 +531,10 @@ void _startBounceFromPoints() {
 }
 
 class FreeKickFieldPainter extends CustomPainter {
-  final Offset ballPos;
-  final double keeperT;
-  final double kickT;
-  final Offset playerPos;
+  final Offset ballPos;      // 0..1
+  final double keeperT;      // 0..1
+  final double kickT;        // 0..1
+  final Offset playerPos;    // 0..1
   final bool keeperHasBall;
 
   FreeKickFieldPainter({
@@ -532,190 +547,338 @@ class FreeKickFieldPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    _drawSkyAndCrowd(canvas, size);
+    _drawAds(canvas, size);
+    _drawPitch(canvas, size);
+
+    // Goal + net
+    final goalRect = _drawGoalAndNet(canvas, size);
+
+    // Keeper
+    _drawKeeper(canvas, size, goalRect);
+
+    // Wall player at fixed fraction (0.5, 0.63) – matches physics
+    _drawWallPlayer(canvas, size);
+
+    // Kicker (foreground)
+    _drawKicker(canvas, size, playerPos, kickT);
+
+    // Ball
+    _drawBall(canvas, size, ballPos);
+    _drawBallShadow(canvas, size, ballPos);
+  }
+
+  // ---------------------------------------------------------------------------
+  // BACKGROUND: sky + crowd
+  // ---------------------------------------------------------------------------
+
+  void _drawSkyAndCrowd(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
     final paint = Paint();
 
-    // --- background: sky ---
-    paint.color = const Color(0xFF1D4F91);
-    canvas.drawRect(
-      Rect.fromLTWH(0, 0, size.width, size.height * 0.18),
-      paint,
-    );
+    // Sky
+    final skyRect = Rect.fromLTWH(0, 0, w, h * 0.22);
+    paint.shader = const LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        Color(0xFF2F5FB8),
+        Color(0xFF6795F2),
+      ],
+    ).createShader(skyRect);
+    canvas.drawRect(skyRect, paint);
 
-    // --- stands with crowd ---
-    final standsTop = size.height * 0.05;
-    final standsHeight = size.height * 0.13;
-    paint.color = const Color(0xFF3B3B6D);
-    canvas.drawRect(
-      Rect.fromLTWH(0, standsTop, size.width, standsHeight),
-      paint,
-    );
+    // Crowd block
+    final crowdTop = h * 0.07;
+    final crowdHeight = h * 0.18;
+    final crowdRect = Rect.fromLTWH(0, crowdTop, w, crowdHeight);
 
-    final crowdPaint = Paint();
-    final crowdCellW = size.width / 20;
-    final crowdCellH = standsHeight / 4;
-    for (int r = 0; r < 4; r++) {
-      for (int c = 0; c < 20; c++) {
-        final x = c * crowdCellW;
-        final y = standsTop + r * crowdCellH;
-        crowdPaint.color = [
-          const Color(0xFFEAD7A4),
-          const Color(0xFFB0E0F8),
-          const Color(0xFF5FC86F),
-          const Color(0xFFF3B0B5),
-        ][(r + c) % 4];
+    paint.shader = null;
+    paint.color = const Color(0xFF151824);
+    canvas.drawRect(crowdRect, paint);
+
+    // Dots / tiles to fake people
+    final tileW = w / 26;
+    final tileH = crowdHeight / 7;
+    final colors = <Color>[
+      const Color(0xFFF3D2A3),
+      const Color(0xFFE8E8E8),
+      const Color(0xFF2980B9),
+      const Color(0xFF27AE60),
+      const Color(0xFFE74C3C),
+      const Color(0xFF95A5A6),
+    ];
+
+    final dotPaint = Paint();
+    for (int r = 0; r < 7; r++) {
+      for (int c = 0; c < 26; c++) {
+        dotPaint.color = colors[(r * 3 + c * 5) % colors.length];
+        final x = c * tileW;
+        final y = crowdTop + r * tileH;
         canvas.drawRect(
-          Rect.fromLTWH(x + 1, y + 1, crowdCellW - 2, crowdCellH - 2),
-          crowdPaint,
+          Rect.fromLTWH(x + 1, y + 1, tileW - 2, tileH - 2),
+          dotPaint,
         );
       }
     }
 
-    // --- ads ---
-    paint.color = const Color(0xFFD71F26);
-    canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.18, size.width, size.height * 0.06),
+    // Light from top
+    final overlay = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [
+          Colors.white.withOpacity(0.25),
+          Colors.transparent,
+        ],
+      ).createShader(crowdRect);
+    canvas.drawRect(crowdRect, overlay);
+  }
+
+  // ---------------------------------------------------------------------------
+  // ADS
+  // ---------------------------------------------------------------------------
+
+  void _drawAds(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final paint = Paint();
+
+    final adsTop = h * 0.23;
+    final adsHeight = h * 0.06;
+
+    final baseRect = Rect.fromLTWH(0, adsTop, w, adsHeight);
+    paint.color = const Color(0xFF1C1F2C);
+    canvas.drawRect(baseRect, paint);
+
+    final segments = 7;
+    final segW = w / segments.toDouble();
+    final adColors = <Color>[
+      const Color(0xFFF4F4F4), // white
+      const Color(0xFF1E90D7), // blue
+      const Color(0xFFE9C417), // yellow
+      const Color(0xFFCC1F2F), // red
+      const Color(0xFF1E90D7),
+      const Color(0xFFF4F4F4),
+      const Color(0xFF333333),
+    ];
+
+    for (int i = 0; i < segments; i++) {
+      paint.color = adColors[i % adColors.length];
+      canvas.drawRect(
+        Rect.fromLTWH(i * segW, adsTop, segW - 1, adsHeight),
+        paint,
+      );
+    }
+
+    // thin white trim on top
+    paint
+      ..color = Colors.white
+      ..strokeWidth = 1.5;
+    canvas.drawLine(
+      Offset(0, adsTop),
+      Offset(w, adsTop),
       paint,
     );
+  }
 
-    // --- pitch ---
-    paint.color = const Color(0xFF137F2B);
-    canvas.drawRect(
-      Rect.fromLTWH(0, size.height * 0.24, size.width, size.height * 0.76),
-      paint,
-    );
+  // ---------------------------------------------------------------------------
+  // PITCH
+  // ---------------------------------------------------------------------------
 
-    final patternPaint = Paint()..color = const Color(0xFF0E6A21);
-    final cellW = size.width / 16;
-    final cellH = size.height * 0.02;
-    for (int r = 0; r < 30; r++) {
-      for (int c = 0; c < 16; c++) {
-        if ((r + c) % 2 == 0) continue;
-        final x = c * cellW;
-        final y = size.height * 0.24 + r * cellH;
+  void _drawPitch(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final paint = Paint();
+
+    final pitchTop = h * 0.29;
+    final pitchRect = Rect.fromLTWH(0, pitchTop, w, h - pitchTop);
+
+    paint.shader = const LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        Color(0xFF26A03B),
+        Color(0xFF0B6A24),
+      ],
+    ).createShader(pitchRect);
+    canvas.drawRect(pitchRect, paint);
+
+    // Stripes with slight perspective
+    final stripePaint = Paint()..color = const Color(0xFF0D7B2A);
+    final stripes = 9;
+    for (int i = 0; i < stripes; i++) {
+      if (i.isOdd) {
+        final tTop = i / stripes;
+        final tBottom = (i + 1) / stripes;
+        final yTop = pitchTop + (h - pitchTop) * tTop;
+        final yBottom = pitchTop + (h - pitchTop) * tBottom;
         canvas.drawRect(
-          Rect.fromLTWH(x, y, cellW, cellH),
-          patternPaint,
+          Rect.fromLTRB(0, yTop, w, yBottom),
+          stripePaint,
         );
       }
     }
 
-    // --- goal ---
-    final goalWidth = size.width * 0.6;
-    final goalHeight = size.height * 0.12;
-    final goalLeft = (size.width - goalWidth) / 2;
-    final goalTop = size.height * 0.18;
+    // Hint of halfway-ish line (angled)
+    paint
+      ..shader = null
+      ..color = Colors.white.withOpacity(0.22)
+      ..strokeWidth = 1.4;
+    canvas.drawLine(
+      Offset(0, h * 0.64),
+      Offset(w, h * 0.60),
+      paint,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // GOAL & NET
+  // ---------------------------------------------------------------------------
+
+  Rect _drawGoalAndNet(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
+    final paint = Paint();
+
+    // Use similar fractions as physics in secondstage
+    final goalWidth = w * 0.60;
+    final goalHeight = h * 0.11;
+    final goalLeft = (w - goalWidth) / 2;
+    final goalTop = h * 0.19;
     final goalRect = Rect.fromLTWH(goalLeft, goalTop, goalWidth, goalHeight);
 
+    // Posts & bar
     paint
       ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 4;
     canvas.drawRect(goalRect, paint);
 
-    // net
-    paint
+    // 2.5D net
+    final depth = h * 0.045;
+    final backTopLeft =
+        Offset(goalLeft + w * 0.02, goalTop + depth * 0.3);
+    final backTopRight =
+        Offset(goalLeft + goalWidth - w * 0.02, goalTop + depth * 0.3);
+    final backBottomLeft =
+        Offset(goalLeft + w * 0.04, goalTop + goalHeight);
+    final backBottomRight =
+        Offset(goalLeft + goalWidth - w * 0.04, goalTop + goalHeight);
+
+    final netPaint = Paint()
       ..color = Colors.white.withOpacity(0.4)
       ..strokeWidth = 1;
-    const netRows = 5;
-    const netCols = 8;
-    for (int i = 1; i < netRows; i++) {
-      final y = goalTop + goalHeight * (i / netRows);
+
+    // side nets
+    final leftSide = Path()
+      ..moveTo(goalLeft, goalTop)
+      ..lineTo(backTopLeft.dx, backTopLeft.dy)
+      ..lineTo(backBottomLeft.dx, backBottomLeft.dy)
+      ..lineTo(goalLeft, goalTop + goalHeight)
+      ..close();
+    canvas.drawPath(leftSide, netPaint);
+
+    final rightSide = Path()
+      ..moveTo(goalLeft + goalWidth, goalTop)
+      ..lineTo(backTopRight.dx, backTopRight.dy)
+      ..lineTo(backBottomRight.dx, backBottomRight.dy)
+      ..lineTo(goalLeft + goalWidth, goalTop + goalHeight)
+      ..close();
+    canvas.drawPath(rightSide, netPaint);
+
+    // vertical net lines
+    for (int i = 0; i <= 6; i++) {
+      final t = i / 6;
+      final yFront = goalTop + goalHeight * t;
+      final yBack =
+          backTopLeft.dy + (backBottomLeft.dy - backTopLeft.dy) * t;
       canvas.drawLine(
-        Offset(goalLeft, y),
-        Offset(goalLeft + goalWidth, y),
-        paint,
+        Offset(goalLeft, yFront),
+        Offset(backTopLeft.dx, yBack),
+        netPaint,
+      );
+      canvas.drawLine(
+        Offset(goalLeft + goalWidth, yFront),
+        Offset(backTopRight.dx, yBack),
+        netPaint,
       );
     }
-    for (int j = 1; j < netCols; j++) {
-      final x = goalLeft + goalWidth * (j / netCols);
+    // back horizontal
+    for (int j = 1; j <= 4; j++) {
+      final tj = j / 5;
+      final y =
+          backTopLeft.dy + (backBottomLeft.dy - backTopLeft.dy) * tj;
       canvas.drawLine(
-        Offset(x, goalTop),
-        Offset(x, goalTop + goalHeight),
-        paint,
+        Offset(backTopLeft.dx, y),
+        Offset(backTopRight.dx, y),
+        netPaint,
       );
     }
 
-    // penalty area
-    final boxWidth = size.width * 0.8;
-    final boxHeight = size.height * 0.28;
-    final boxLeft = (size.width - boxWidth) / 2;
-    final boxTop = goalTop + goalHeight;
+    // goal line
     paint
       ..color = Colors.white
       ..strokeWidth = 2;
-    canvas.drawRect(
-      Rect.fromLTWH(boxLeft, boxTop, boxWidth, boxHeight),
+    canvas.drawLine(
+      Offset(goalLeft, goalTop + goalHeight),
+      Offset(goalLeft + goalWidth, goalTop + goalHeight),
       paint,
     );
 
-    // 6-yard box
-    final sixWidth = goalWidth * 0.6;
-    final sixHeight = boxHeight * 0.4;
-    final sixLeft = (size.width - sixWidth) / 2;
-    final sixTop = goalTop + goalHeight;
-    canvas.drawRect(
-      Rect.fromLTWH(sixLeft, sixTop, sixWidth, sixHeight),
-      paint,
-    );
-
-    // free kick mark
-    paint
-      ..color = Colors.white
-      ..style = PaintingStyle.fill;
-    canvas.drawCircle(
-      Offset(size.width * 0.35, size.height * 0.78),
-      3,
-      paint,
-    );
-
-    // elements
-    _drawWallPlayer(canvas, size);
-    _drawKeeper(canvas, size, goalLeft, goalTop, goalWidth, goalHeight);
-    _drawPlayer(canvas, size, kickT, playerPos);
-    _drawBall(canvas, size, ballPos);
+    return goalRect;
   }
 
-  // --- keeper (same style as penalty scene) ---
-  void _drawKeeper(Canvas canvas, Size size, double goalLeft, double goalTop,
-      double goalWidth, double goalHeight) {
+  // ---------------------------------------------------------------------------
+  // KEEPER
+  // ---------------------------------------------------------------------------
+
+  void _drawKeeper(Canvas canvas, Size size, Rect goalRect) {
+    final h = size.height;
     final paint = Paint();
 
-    final keeperWidth = goalWidth * 0.23;
-    final keeperHeight = goalHeight * 0.8;
+    final goalLeft = goalRect.left;
+    final goalWidth = goalRect.width;
+    final goalTop = goalRect.top;
+    final goalHeight = goalRect.height;
 
-    final minCenterX = goalLeft + keeperWidth / 2;
-    final maxCenterX = goalLeft + goalWidth - keeperWidth / 2;
-    final cx = minCenterX + (maxCenterX - minCenterX) * keeperT;
+    // Keeper horizontally in goal
+    final minX = goalLeft + goalWidth * 0.18;
+    final maxX = goalLeft + goalWidth * 0.82;
+    final cx = minX + (maxX - minX) * keeperT;
 
-    final top = goalTop + goalHeight * 0.18;
+    final feetY = goalTop + goalHeight * 0.95;
+    final height = h * 0.17; // smaller than kicker
+    final headR = height * 0.11;
 
     // head
-    final headRadius = keeperWidth * 0.13;
     paint
       ..color = const Color(0xFFF4D0A1)
       ..style = PaintingStyle.fill;
-    final headCenter = Offset(cx, top + headRadius);
-    canvas.drawCircle(headCenter, headRadius, paint);
+    final headCenter =
+        Offset(cx, feetY - height + headR * 1.0);
+    canvas.drawCircle(headCenter, headR, paint);
 
     // hair
-    paint.color = const Color(0xFF5B3A24);
+    paint.color = const Color(0xFF3C2A20);
     canvas.drawArc(
-      Rect.fromCircle(center: headCenter, radius: headRadius),
+      Rect.fromCircle(center: headCenter, radius: headR),
       math.pi,
       math.pi,
       true,
       paint,
     );
 
-    // torso
-    paint.color = const Color(0xFF0054A6);
-    final torsoWidth = keeperWidth * 0.55;
-    final torsoHeight = keeperHeight * 0.5;
+    // jersey
+    paint.color = const Color(0xFFF1C40F);
+    final torsoW = height * 0.34;
+    final torsoH = height * 0.45;
     final torsoRect = Rect.fromLTWH(
-      cx - torsoWidth / 2,
-      headCenter.dy + headRadius * 0.2,
-      torsoWidth,
-      torsoHeight,
+      cx - torsoW / 2,
+      headCenter.dy + headR * 0.2,
+      torsoW,
+      torsoH,
     );
     canvas.drawRRect(
       RRect.fromRectAndRadius(torsoRect, const Radius.circular(6)),
@@ -724,50 +887,47 @@ class FreeKickFieldPainter extends CustomPainter {
 
     // arms
     paint
-      ..color = const Color(0xFF0054A6)
+      ..color = const Color(0xFFF1C40F)
       ..strokeWidth = 4;
-    final shoulderY = torsoRect.top + torsoHeight * 0.25;
-
+    final shoulderY = torsoRect.top + torsoH * 0.3;
     if (!keeperHasBall) {
-      final armSpan = torsoWidth * 1.8;
+      final span = torsoW * 1.8;
       canvas.drawLine(
-        Offset(cx - armSpan / 2, shoulderY),
-        Offset(cx + armSpan / 2, shoulderY),
+        Offset(cx - span / 2, shoulderY),
+        Offset(cx + span / 2, shoulderY),
         paint,
       );
     } else {
-      final handsY = torsoRect.top + torsoHeight * 0.45;
-      final leftShoulder = Offset(cx - torsoWidth * 0.6, shoulderY);
-      final rightShoulder = Offset(cx + torsoWidth * 0.6, shoulderY);
+      final handsY = torsoRect.top + torsoH * 0.55;
+      final leftShoulder = Offset(cx - torsoW * 0.8, shoulderY);
+      final rightShoulder = Offset(cx + torsoW * 0.8, shoulderY);
       canvas.drawLine(leftShoulder, Offset(cx - 4, handsY), paint);
       canvas.drawLine(rightShoulder, Offset(cx + 4, handsY), paint);
     }
 
     // shorts
-    paint.color = const Color(0xFF222222);
-    final shortsHeight = keeperHeight * 0.22;
+    paint.color = const Color(0xFF1E2A4C);
+    final shortsH = height * 0.22;
     final shortsRect = Rect.fromLTWH(
-      cx - torsoWidth / 2,
+      cx - torsoW / 2,
       torsoRect.bottom,
-      torsoWidth,
-      shortsHeight,
+      torsoW,
+      shortsH,
     );
     canvas.drawRect(shortsRect, paint);
 
     // legs
     paint
-      ..color = Colors.white
+      ..color = const Color(0xFFF7F7F7)
       ..strokeWidth = 4;
     final legTop = shortsRect.bottom;
-    final legLength = keeperHeight * 0.35;
-
-    final leftHip = Offset(cx - torsoWidth * 0.18, legTop);
-    final rightHip = Offset(cx + torsoWidth * 0.18, legTop);
+    final legLen = height * 0.36;
+    final leftHip = Offset(cx - torsoW * 0.18, legTop);
+    final rightHip = Offset(cx + torsoW * 0.18, legTop);
     final leftFoot =
-        Offset(leftHip.dx - torsoWidth * 0.1, legTop + legLength);
+        Offset(leftHip.dx - torsoW * 0.08, legTop + legLen);
     final rightFoot =
-        Offset(rightHip.dx + torsoWidth * 0.1, legTop + legLength);
-
+        Offset(rightHip.dx + torsoW * 0.08, legTop + legLen);
     canvas.drawLine(leftHip, leftFoot, paint);
     canvas.drawLine(rightHip, rightFoot, paint);
 
@@ -777,259 +937,305 @@ class FreeKickFieldPainter extends CustomPainter {
       ..strokeWidth = 5;
     canvas.drawLine(
       leftFoot,
-      Offset(leftFoot.dx - torsoWidth * 0.08, leftFoot.dy),
+      Offset(leftFoot.dx - torsoW * 0.06, leftFoot.dy),
       bootsPaint,
     );
     canvas.drawLine(
       rightFoot,
-      Offset(rightFoot.dx + torsoWidth * 0.08, rightFoot.dy),
+      Offset(rightFoot.dx + torsoW * 0.06, rightFoot.dy),
       bootsPaint,
     );
   }
 
-  // --- wall player protecting balls, two legs ---
+  // ---------------------------------------------------------------------------
+  // WALL PLAYER
+  // ---------------------------------------------------------------------------
+
   void _drawWallPlayer(Canvas canvas, Size size) {
+    final w = size.width;
+    final h = size.height;
     final paint = Paint();
 
-    final x = size.width * 0.5;
-    final y = size.height * 0.63;
+    // Match physics: center at (0.5, 0.63)
+    final cx = w * 0.5;
+    final cy = h * 0.63;
 
-    final bodyHeight = size.height * 0.16;
-    final headRadius = bodyHeight * 0.12;
+    final height = h * 0.23;
+    final headR = height * 0.11;
 
     // head
     paint
       ..color = const Color(0xFFF4D0A1)
       ..style = PaintingStyle.fill;
-    final headCenter = Offset(x, y - bodyHeight * 0.7);
-    canvas.drawCircle(headCenter, headRadius, paint);
+    final headCenter = Offset(cx, cy - height * 0.7);
+    canvas.drawCircle(headCenter, headR, paint);
 
     // hair
     paint.color = const Color(0xFF6B3C1E);
     canvas.drawArc(
-      Rect.fromCircle(center: headCenter, radius: headRadius),
+      Rect.fromCircle(center: headCenter, radius: headR),
       math.pi,
       math.pi,
       true,
       paint,
     );
 
-    // torso
-    paint.color = const Color(0xFF0FA655);
-    final torsoWidth = bodyHeight * 0.24;
-    final torsoHeight = bodyHeight * 0.5;
+    // jersey (red)
+    paint.color = const Color(0xFFC0392B);
+    final torsoW = height * 0.26;
+    final torsoH = height * 0.50;
     final torsoRect = Rect.fromLTWH(
-      x - torsoWidth / 2,
-      headCenter.dy + headRadius * 0.2,
-      torsoWidth,
-      torsoHeight,
+      cx - torsoW / 2,
+      headCenter.dy + headR * 0.25,
+      torsoW,
+      torsoH,
     );
     canvas.drawRRect(
       RRect.fromRectAndRadius(torsoRect, const Radius.circular(6)),
       paint,
     );
 
-    // arms covering balls
+    // arms protecting balls
     paint
-      ..color = const Color(0xFF0FA655)
+      ..color = const Color(0xFFC0392B)
       ..strokeWidth = 3.8;
-    final shoulderY = torsoRect.top + torsoHeight * 0.25;
-    final shoulderLeft = x - torsoWidth * 0.55;
-    final shoulderRight = x + torsoWidth * 0.55;
-    final handsY = torsoRect.bottom - torsoHeight * 0.05;
-    final handsX = x;
-    canvas.drawLine(
-      Offset(shoulderLeft, shoulderY),
-      Offset(handsX - 3, handsY),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(shoulderRight, shoulderY),
-      Offset(handsX + 3, handsY),
-      paint,
-    );
+    final shoulderY = torsoRect.top + torsoH * 0.25;
+    final handsY = torsoRect.bottom - torsoH * 0.08;
+    final leftShoulder = Offset(cx - torsoW * 0.7, shoulderY);
+    final rightShoulder = Offset(cx + torsoW * 0.7, shoulderY);
+    canvas.drawLine(leftShoulder, Offset(cx - 3, handsY), paint);
+    canvas.drawLine(rightShoulder, Offset(cx + 3, handsY), paint);
 
-    // shorts
-    paint.color = const Color(0xFF146B3A);
-    final shortsHeight = bodyHeight * 0.23;
+    // shorts (white)
+    paint.color = const Color(0xFFE5E5E5);
+    final shortsH = height * 0.22;
     final shortsRect = Rect.fromLTWH(
-      x - torsoWidth / 2,
+      cx - torsoW / 2,
       torsoRect.bottom,
-      torsoWidth,
-      shortsHeight,
+      torsoW,
+      shortsH,
     );
     canvas.drawRect(shortsRect, paint);
 
     // two legs
     paint
-      ..color = Colors.white
+      ..color = Colors.redAccent.shade100
       ..strokeWidth = 4;
     final hipY = shortsRect.bottom;
-    final legLength = bodyHeight * 0.42;
-
-    final leftHip = Offset(x - torsoWidth * 0.2, hipY);
-    final rightHip = Offset(x + torsoWidth * 0.2, hipY);
+    final legLen = height * 0.42;
+    final leftHip = Offset(cx - torsoW * 0.20, hipY);
+    final rightHip = Offset(cx + torsoW * 0.20, hipY);
     final leftFoot =
-        Offset(leftHip.dx - torsoWidth * 0.05, hipY + legLength);
+        Offset(leftHip.dx - torsoW * 0.05, hipY + legLen);
     final rightFoot =
-        Offset(rightHip.dx + torsoWidth * 0.05, hipY + legLength);
-
+        Offset(rightHip.dx + torsoW * 0.05, hipY + legLen);
     canvas.drawLine(leftHip, leftFoot, paint);
     canvas.drawLine(rightHip, rightFoot, paint);
 
+    // boots
     final bootsPaint = Paint()
       ..color = Colors.black
       ..strokeWidth = 5;
     canvas.drawLine(
       leftFoot,
-      Offset(leftFoot.dx - torsoWidth * 0.05, leftFoot.dy),
+      Offset(leftFoot.dx - torsoW * 0.06, leftFoot.dy),
       bootsPaint,
     );
     canvas.drawLine(
       rightFoot,
-      Offset(rightFoot.dx + torsoWidth * 0.05, rightFoot.dy),
+      Offset(rightFoot.dx + torsoW * 0.06, rightFoot.dy),
       bootsPaint,
     );
   }
 
-  // --- kicker ---
-  void _drawPlayer(
-      Canvas canvas, Size size, double kickT, Offset playerPosFrac) {
+  // ---------------------------------------------------------------------------
+  // KICKER (foreground)
+  // ---------------------------------------------------------------------------
+
+  void _drawKicker(
+      Canvas canvas, Size size, Offset playerPosFrac, double kickT) {
+    final w = size.width;
+    final h = size.height;
     final paint = Paint();
 
-    final px = playerPosFrac.dx * size.width;
-    final py = playerPosFrac.dy * size.height;
+    final px = playerPosFrac.dx * w;
+    final py = playerPosFrac.dy * h;
 
-    final bodyHeight = size.height * 0.18;
-    final headRadius = bodyHeight * 0.12;
+    final height = h * 0.34;
+    final headR = height * 0.11;
 
     // head
     paint
       ..color = const Color(0xFFF4D0A1)
       ..style = PaintingStyle.fill;
-    final headCenter = Offset(px, py - bodyHeight * 0.7);
-    canvas.drawCircle(headCenter, headRadius, paint);
+    final headCenter = Offset(px, py - height + headR * 1.2);
+    canvas.drawCircle(headCenter, headR, paint);
 
     // hair
-    paint.color = const Color(0xFF6B3C1E);
+    paint.color = const Color(0xFF2C1C11);
     canvas.drawArc(
-      Rect.fromCircle(center: headCenter, radius: headRadius),
+      Rect.fromCircle(center: headCenter, radius: headR),
       math.pi,
       math.pi,
       true,
       paint,
     );
 
-    // shirt
-    paint.color = Colors.white;
-    final torsoWidth = bodyHeight * 0.26;
-    final torsoHeight = bodyHeight * 0.48;
+    // jersey (Brazil-like yellow)
+    paint.color = const Color(0xFFF4D03F);
+    final torsoW = height * 0.34;
+    final torsoH = height * 0.46;
     final torsoRect = Rect.fromLTWH(
-      px - torsoWidth / 2,
-      headCenter.dy + headRadius * 0.2,
-      torsoWidth,
-      torsoHeight,
+      px - torsoW / 2,
+      headCenter.dy + headR * 0.18,
+      torsoW,
+      torsoH,
     );
     canvas.drawRRect(
-      RRect.fromRectAndRadius(torsoRect, const Radius.circular(6)),
+      RRect.fromRectAndRadius(torsoRect, const Radius.circular(8)),
       paint,
+    );
+
+    // side shading
+    final sidePaint = Paint()
+      ..color = const Color(0xFFF7E47B)
+      ..strokeWidth = 3;
+    canvas.drawLine(
+      Offset(torsoRect.left + 2, torsoRect.top + 4),
+      Offset(torsoRect.left + 2, torsoRect.bottom - 4),
+      sidePaint,
     );
 
     // arms
     paint
-      ..color = Colors.white
-      ..strokeWidth = 3.5;
-    final armY = torsoRect.top + torsoHeight * 0.3;
-    final armSpan = torsoWidth * 1.7;
+      ..color = const Color(0xFFF4D03F)
+      ..strokeWidth = 4;
+    final shoulderY = torsoRect.top + torsoH * 0.25;
     canvas.drawLine(
-      Offset(px - armSpan / 2, armY),
-      Offset(px + armSpan / 2, armY),
+      Offset(px - torsoW * 0.75, shoulderY),
+      Offset(px - torsoW * 0.75, shoulderY + torsoH * 0.5),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(px + torsoW * 0.75, shoulderY),
+      Offset(px + torsoW * 0.75, shoulderY + torsoH * 0.5),
       paint,
     );
 
-    // shorts
-    paint.color = const Color(0xFF777777);
-    final shortsHeight = bodyHeight * 0.22;
+    // shorts (blue)
+    paint.color = const Color(0xFF1F4E8C);
+    final shortsH = height * 0.21;
     final shortsRect = Rect.fromLTWH(
-      px - torsoWidth / 2,
+      px - torsoW / 2,
       torsoRect.bottom,
-      torsoWidth,
-      shortsHeight,
+      torsoW,
+      shortsH,
     );
     canvas.drawRect(shortsRect, paint);
 
     // legs
     paint
-      ..color = Colors.white
+      ..color = const Color(0xFFF7F7F7)
       ..strokeWidth = 4;
     final hipY = shortsRect.bottom;
-    final legLength = bodyHeight * 0.45;
+    final legLen = height * 0.42;
 
     // support leg
-    final leftHip = Offset(px - torsoWidth * 0.22, hipY);
+    final leftHip = Offset(px - torsoW * 0.24, hipY);
     final leftFoot =
-        Offset(leftHip.dx - torsoWidth * 0.08, hipY + legLength);
+        Offset(leftHip.dx - torsoW * 0.06, hipY + legLen);
     canvas.drawLine(leftHip, leftFoot, paint);
 
-    // kicking leg
-    final rightHip = Offset(px + torsoWidth * 0.22, hipY);
+    // kicking leg (animated)
+    final rightHip = Offset(px + torsoW * 0.24, hipY);
     const startAngle = 1.6;
-    const endAngle = 0.7;
+    const endAngle = 0.8;
     final eased = Curves.easeOut.transform(kickT.clamp(0.0, 1.0));
     final angle = startAngle + (endAngle - startAngle) * eased;
-    final dx = legLength * math.cos(angle);
-    final dy = legLength * math.sin(angle);
+    final dx = legLen * math.cos(angle);
+    final dy = legLen * math.sin(angle);
     final rightFoot = Offset(rightHip.dx + dx, rightHip.dy + dy);
     canvas.drawLine(rightHip, rightFoot, paint);
 
     // boots
     final bootsPaint = Paint()
       ..color = Colors.black
-      ..strokeWidth = 5;
+      ..strokeWidth = 6;
     canvas.drawLine(
       leftFoot,
-      Offset(leftFoot.dx - torsoWidth * 0.07, leftFoot.dy),
+      Offset(leftFoot.dx - torsoW * 0.08, leftFoot.dy),
       bootsPaint,
     );
     canvas.drawLine(
       rightFoot,
-      Offset(rightFoot.dx + torsoWidth * 0.07, rightFoot.dy),
+      Offset(rightFoot.dx + torsoW * 0.10, rightFoot.dy),
       bootsPaint,
     );
   }
 
-  // --- ball ---
-  void _drawBall(Canvas canvas, Size size, Offset ballPos) {
-    final paint = Paint();
-    final r = size.width * 0.018;
-    final c = Offset(ballPos.dx * size.width, ballPos.dy * size.height);
+  // ---------------------------------------------------------------------------
+  // BALL
+  // ---------------------------------------------------------------------------
 
+  void _drawBall(Canvas canvas, Size size, Offset ballPosFrac) {
+    final w = size.width;
+    final h = size.height;
+    final paint = Paint();
+
+    final cx = ballPosFrac.dx * w;
+    final cy = ballPosFrac.dy * h;
+    final r = h * 0.026;
+
+    // base
     paint
       ..color = Colors.white
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(c, r, paint);
+    canvas.drawCircle(Offset(cx, cy), r, paint);
 
+    // outline
     paint
-      ..color = Colors.black
+      ..color = Colors.black87
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-    canvas.drawCircle(c, r, paint);
+      ..strokeWidth = 1.6;
+    canvas.drawCircle(Offset(cx, cy), r, paint);
 
+    // panels
     paint
       ..style = PaintingStyle.fill
-      ..color = Colors.black;
-
-    canvas.drawCircle(c, r * 0.25, paint);
+      ..color = Colors.black87;
+    canvas.drawCircle(Offset(cx, cy), r * 0.30, paint);
 
     const patches = 6;
     for (int i = 0; i < patches; i++) {
       final angle = 2 * math.pi * i / patches;
       final o = Offset(
-        math.cos(angle) * r * 0.6,
-        math.sin(angle) * r * 0.6,
+        math.cos(angle) * r * 0.65,
+        math.sin(angle) * r * 0.65,
       );
-      canvas.drawCircle(c + o, r * 0.18, paint);
+      canvas.drawCircle(Offset(cx, cy) + o, r * 0.18, paint);
     }
+  }
+
+  void _drawBallShadow(Canvas canvas, Size size, Offset ballPosFrac) {
+    final w = size.width;
+    final h = size.height;
+    final paint = Paint();
+
+    final cx = ballPosFrac.dx * w;
+    final cy = ballPosFrac.dy * h + h * 0.01;
+
+    final rx = h * 0.03;
+    final ry = h * 0.011;
+
+    paint
+      ..color = Colors.black.withOpacity(0.35)
+      ..style = PaintingStyle.fill;
+
+    canvas.save();
+    canvas.translate(cx, cy);
+    canvas.scale(1.0, ry / rx);
+    canvas.drawCircle(Offset.zero, rx, paint);
+    canvas.restore();
   }
 
   @override
