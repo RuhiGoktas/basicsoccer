@@ -3,11 +3,25 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 class SecondStagePage extends StatefulWidget {
-  const SecondStagePage({super.key});
+  final String teamName;
+  final String playerName;
+  final int playerNumber;
+  final Color shirtColor;
+  final Color skinColor;
+
+  const SecondStagePage({
+    super.key,
+    required this.teamName,
+    required this.playerName,
+    required this.playerNumber,
+    required this.shirtColor,
+    required this.skinColor,
+  });
 
   @override
   State<SecondStagePage> createState() => _SecondStagePageState();
 }
+
 
 enum BallPhase { idle, shot, bounce }
 
@@ -521,7 +535,11 @@ Offset _bezier2(Offset p0, Offset p1, Offset p2, double t) {
 					keeperT: _keeperT,
 					kickT: _kickT,
 					playerPos: _playerPos,
-					keeperHasBall: _keeperHasBall,
+					keeperHasBall: _keeperHasBall,					    
+					shirtColor: widget.shirtColor,
+					playerName: widget.playerName,
+					playerNumber: widget.playerNumber,
+					
 				  ),
 				),
 				// status text
@@ -577,6 +595,10 @@ class FreeKickFieldPainter extends CustomPainter {
   final double kickT;        // 0..1
   final Offset playerPos;    // 0..1
   final bool keeperHasBall;
+  
+  final Color shirtColor;
+  final String playerName;
+  final int playerNumber;
 
   FreeKickFieldPainter({
     required this.ballPos,
@@ -584,6 +606,9 @@ class FreeKickFieldPainter extends CustomPainter {
     required this.kickT,
     required this.playerPos,
     required this.keeperHasBall,
+	required this.shirtColor,
+    required this.playerName,
+    required this.playerNumber,
   });
 
   @override
@@ -912,7 +937,8 @@ class FreeKickFieldPainter extends CustomPainter {
     );
 
     // jersey
-    paint.color = const Color(0xFFF1C40F);
+	
+    paint.color = const Color(0xFF3C2A20);
     final torsoW = height * 0.34;
     final torsoH = height * 0.45;
     final torsoRect = Rect.fromLTWH(
@@ -926,9 +952,10 @@ class FreeKickFieldPainter extends CustomPainter {
       paint,
     );
 
+
     // arms
     paint
-      ..color = const Color(0xFFF1C40F)
+      ..color = const Color(0xFF3C2A20)
       ..strokeWidth = 4;
     final shoulderY = torsoRect.top + torsoH * 0.3;
     if (!keeperHasBall) {
@@ -1253,7 +1280,8 @@ void _drawKicker(
   );
 
   // --- BODY (jersey) ---
-  paint.color = const Color(0xFFF4D03F); // yellow jersey
+	final jerseyColor = shirtColor;
+    paint.color = jerseyColor;
   final torsoW = height * 0.34;
   final torsoH = height * 0.46;
   final torsoRect = Rect.fromLTWH(
@@ -1266,6 +1294,47 @@ void _drawKicker(
     RRect.fromRectAndRadius(torsoRect, const Radius.circular(8)),
     paint,
   );
+  
+  	// Back name + number
+final bool darkJersey = jerseyColor.computeLuminance() < 0.45;
+final textColor = darkJersey ? Colors.white.withOpacity(0.95) : Colors.black.withOpacity(0.85);
+
+// NAME
+final namePainter = TextPainter(
+  text: TextSpan(
+    text: playerName.toUpperCase(),
+    style: TextStyle(
+      color: textColor,
+      fontWeight: FontWeight.w800,
+      fontSize: torsoH * 0.16,
+      letterSpacing: 1.1,
+    ),
+  ),
+  textAlign: TextAlign.center,
+  textDirection: TextDirection.ltr,
+  maxLines: 1,
+  ellipsis: "…",
+)..layout(maxWidth: torsoRect.width * 0.92);
+
+namePainter.paint(
+  canvas,
+  Offset(torsoRect.center.dx - namePainter.width / 2, torsoRect.top + torsoRect.height * 0.18),
+);
+
+// NUMBER
+final numberPainter = TextPainter(
+  text: TextSpan(
+    text: "$playerNumber",
+    style: TextStyle(
+      color: textColor,
+      fontWeight: FontWeight.w900,
+      fontSize: torsoH * 0.52,
+      height: 0.95,
+    ),
+  ),
+  textAlign: TextAlign.center,
+  textDirection: TextDirection.ltr,
+)..layout(maxWidth: torsoRect.width);
 
   // side shading
   final sidePaint = Paint()
@@ -1494,6 +1563,10 @@ void _drawKicker(
         old.kickT != kickT ||
         old.playerPos != playerPos ||
         old.keeperHasBall != keeperHasBall;
+		old.shirtColor != shirtColor||
+        old.playerName != playerName ||
+        old.playerNumber != playerNumber;
+		
   }
 }
 

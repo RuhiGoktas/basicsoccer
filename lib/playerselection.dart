@@ -332,12 +332,21 @@ String _normalizeCountry(String c) {
 				onPressed: selected == null
 					? null
 					: () {
+						final kitColor = _kitColorForCountry(widget.teamName);
+
 						Navigator.push(
 						  context,
-						  MaterialPageRoute(builder: (_) => const PenaltyStagePage()),
+						  MaterialPageRoute(
+							builder: (_) => PenaltyStagePage(
+							  teamName: widget.teamName,
+							  playerName: selected!.name,
+							  playerNumber: selected!.number,
+							  shirtColor: kitColor,
+							  skinColor: skinColor
+							),
+						  ),
 						);
 					  },
-
                   child: Text(selected == null ? "Pick a player to continue" : "Continue as ${selected!.name}"),
                 ),
               ),
