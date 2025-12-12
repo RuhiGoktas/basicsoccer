@@ -2,6 +2,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'secondstage.dart';
+import 'firststage.dart';
+
 
 void main() {
   runApp(const PenaltyGameApp());
@@ -15,7 +17,7 @@ class PenaltyGameApp extends StatelessWidget {
     return MaterialApp(
       title: 'Retro Penalty Game',
       debugShowCheckedModeBanner: false,
-      home: const PenaltyStagePage(),
+      home: const PickCountryWelcomePage(),
     );
   }
 }
